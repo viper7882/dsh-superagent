@@ -39,6 +39,10 @@ export interface Api {
   'GET policy/history': { response: HistoryView }
   'POST policy-sync/:id': { response: { policy: unknown } }
   'POST setup/check': { response: { restarting: true } }
+  'POST intake': {
+    body: { text: string; title?: string; autoAccept?: boolean; actorId?: string }
+    response: { triggerId: string; ticketId?: string; receive: string; decision?: string; detail?: string }
+  }
   'GET models': { response: ModelCatalog }
   'GET prompts': { query?: { revision?: number; offset?: number }; response: PromptsView }
   'PUT prompts': { body: { config: PromptConfig; baseRevision: number }; response: { revision: number; context_delivery: Delivery } }

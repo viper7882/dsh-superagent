@@ -1,6 +1,6 @@
 /** Plugin configuration and startup verification for repository access and agent CLI identities. */
 import { LIMITS } from './limits.ts'
-import { accessSync, constants, statSync } from 'node:fs'
+import { accessSync, chmodSync, constants, mkdirSync, statSync, writeFileSync } from 'node:fs'
 import { delimiter, isAbsolute, join } from 'node:path'
 import type { Volatile } from '@deepseek-ai/cordis'
 import s from '@deepseek-ai/schemastery'
@@ -10,7 +10,8 @@ import { runAsWorker, sameDirectory, withoutDirectory, workerBin } from './infra
 import { SetupError } from './setup.ts'
 
 const reason = (error: unknown): string => error instanceof Error ? error.message : String(error)
-const absolute = (description: string) => s.string().pattern(/^\//).description(`${description} Absolute path.`)
+// Unix `/…` or Windows `C:/…` / `C:\…` — DSH workspace APIs require a fully qualified OS path on win32.
+const absolute = (description: string) => s.string().pattern(/^(\/|[A-Za-z]:[\\/])/).description(`${description} Absolute path.`)
 /** Plugin configuration of the dsh-superagent entry. Volatile fields apply without a restart because dsh-superagent reads them on each use; changing `stateDir` remounts the plugin. */
 export const Config = s.object({
   stateDir: absolute('Directory for the database, locks, worker shims, the agent\'s git configuration and, by default, the ticket directories.').required(),
@@ -83,12 +84,35 @@ function parsed<T>(schema: z.ZodType<T>, text: string): T | undefined {
   const result = schema.safeParse(value)
   return result.success ? result.data : undefined
 }
+/**
+ * Local / chat-only deployment when no GitHub repository is configured.
+ * Workers still get git identity + shims; prepare command can check out a local workspace.
+ */
+export async function resolveLocalDeployment(machine: Machine, path = process.env.PATH ?? ''): Promise<Deployment> {
+  const { stateDir } = machine
+  mkdirSync(stateDir, { recursive: true })
+  const stub = join(stateDir, process.platform === 'win32' ? 'local-gh.cmd' : 'local-gh')
+  if (process.platform === 'win32') {
+    writeFileSync(stub, '@echo off\r\nif /I "%~1"=="api" if /I "%~2"=="user" (\r\necho {"login":"local-operator","id":1}\r\nexit /b 0\r\n)\r\necho local-gh: unsupported %*\r\nexit /b 1\r\n')
+  } else {
+    writeFileSync(stub, '#!/bin/sh\nif [ "$1" = api ] && [ "$2" = user ]; then echo \'{"login":"local-operator","id":1}\'; exit 0; fi\necho "local-gh: unsupported $*" >&2; exit 1\n', { mode: 0o755 })
+    try { chmodSync(stub, 0o755) } catch { /* ignore */ }
+  }
+  void path
+  return {
+    ...machine,
+    repository: 'local/workspace',
+    github: { cli: stub.replace(/\\/g, '/'), login: 'local-operator', noreply: '1+local-operator@users.noreply.github.com' },
+  }
+}
+
 /** Verify the agent's GitHub CLI identity and push access to the configured repository. */
 export async function resolveDeployment(machine: Machine, github: unknown, probe: Probe, path = process.env.PATH ?? ''): Promise<Deployment> {
   const { stateDir } = machine
   const accounts = GithubAccountsSchema.parse(github ?? {})
   const remote = accounts.repository
-  if (!remote) throw new SetupError('repositoryUnset')
+  // No GitHub repo → chat/local intake (DSH composer Source) instead of blocking setup.
+  if (!remote) return resolveLocalDeployment(machine, path)
   if (!accounts.cli) throw new SetupError('agentCliUnset')
   let cli: string
   try { cli = executable(accounts.cli, path, workerBin(stateDir)) } catch (error) { throw new SetupError('agentCliMissing', { output: reason(error) }) }

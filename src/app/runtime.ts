@@ -14,7 +14,7 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { lockSync } from 'proper-lockfile'
 import { Engine, key, reasonText, type EngineForSettings, type ReceiveResult, type Ticket, type Trigger } from '../core/index.ts'
-import { allowedSender, settingsPolicy } from '../policy.ts'
+import { allowedSender, policyVersion, settingsPolicy } from '../policy.ts'
 import { SourceRegistry } from '../sources/registry.ts'
 import { Commands } from '../infra/commands.ts'
 import type { Deployment, Machine } from '../deployment.ts'
@@ -46,6 +46,7 @@ import { sourceContextOf, type SourceContextDeps } from './source-context.ts'
 import type { ResourceHost } from './resources.ts'
 import { mainTools, type MainToolsHost } from './tools/main.ts'
 import { executorTools, type ExecutorToolsHost } from './tools/executor.ts'
+import { chatChannel, SOURCE as CHAT_SOURCE } from '../sources/chat.ts'
 
 // Source plugins interact with dsh-superagent exclusively through the `SourceHost` service interface.
 declare module '@deepseek-ai/cordis' { interface Context { orchestrator: SourceHost } }
@@ -216,6 +217,89 @@ export class Runtime extends Service implements SourceHost {
     this.effects.start()
     this.runtimeHealth.set({ state: 'ready', detail: 'Orchestrator is ready', at: now() })
   }
+  /**
+   * External intake (Cursor MCP / CLI): synthesize a chat Trigger, receive it, then optionally auto-accept into a Ticket
+   * without waiting for the DeepSeek main-session router.
+   */
+  async chatIntake(input: { text: string; title?: string; autoAccept?: boolean; actorId?: string }): Promise<{
+    triggerId: string
+    ticketId?: string
+    receive: string
+    decision?: string
+    detail?: string
+  }> {
+    const text = input.text.trim()
+    if (!text) throw new Error('intake text is empty')
+    const actorId = (input.actorId ?? 'operator').trim() || 'operator'
+    // Ensure Policy allows this chat actor (existing DBs often have an empty allow-list).
+    {
+      const settings = this.store.settings()
+      const part = settings.policy.sources[CHAT_SOURCE] ?? { allowed: [], admission: {} }
+      const allowed = [...(part.allowed ?? [])]
+      if (!allowed.some(entry => entry.id === actorId)) {
+        allowed.push({ id: actorId, name: 'Local operator' })
+        const next = {
+          ...settings,
+          policy: {
+            ...settings.policy,
+            sources: {
+              ...settings.policy.sources,
+              [CHAT_SOURCE]: { ...part, allowed, admission: part.admission ?? {} },
+            },
+          },
+        }
+        const before = policyVersion(settings)
+        this.store.saveSettings(next, {
+          source: 'internal',
+          policyVersion: policyVersion(next),
+          policyChanged: true,
+          notified: [],
+        })
+        this.engine.policyChanged(before, policyVersion(next), new Map())
+      }
+    }
+    const messageId = key('intake', String(Date.now()), String(Math.random()).slice(2, 10))
+    // Unique session per intake so follow-ups do not attach to an older open ticket on a shared thread.
+    const sessionId = `cursor-bridge-${messageId.slice(0, 12)}`
+    const trigger: Trigger = {
+      id: key('chat', sessionId, messageId),
+      source: CHAT_SOURCE,
+      threads: [{ source: CHAT_SOURCE, id: sessionId }],
+      actor: { source: CHAT_SOURCE, id: actorId },
+      human: true,
+      addressed: 'direct',
+      at: new Date().toISOString(),
+      text,
+      channel: chatChannel(sessionId, messageId),
+      meta: { sessionId, messageId, via: 'http-intake' },
+    }
+    const received = this.receive(trigger)
+    const receiveKind = String(received.kind)
+    if (!input.autoAccept) {
+      this.passes.request()
+      return { triggerId: trigger.id, receive: receiveKind, detail: 'Trigger stored; autoAccept=false (await router)' }
+    }
+    const title = (input.title ?? text).replace(/\s+/g, ' ').trim().slice(0, 200) || 'cursor-request'
+    const acknowledgement = title.length > 80 ? `${title.slice(0, 77)}…` : title
+    const decision = this.engine.decide(trigger.id, {
+      kind: 'accept',
+      title,
+      scope: title,
+      reason: { code: 'explicitRouted' },
+      acknowledgement,
+      name: 'cursor-task',
+      note: 'Accepted via Cursor→DSH HTTP intake (autoAccept)',
+    })
+    this.passes.request()
+    return {
+      triggerId: trigger.id,
+      ticketId: decision.ticketId,
+      receive: receiveKind,
+      decision: decision.kind,
+      detail: reasonText(decision.reason),
+    }
+  }
+
   private httpHost(): HttpHost {
     const runtime = this
     const { store, sources, prompts, sessions, settings, engine, executor, health, machine, masterId, ready, sourceLinks, setup, passes } = this
@@ -223,7 +307,8 @@ export class Runtime extends Service implements SourceHost {
       get deployment() { return setup.deployment },
       get setupProblem() { return setup.problem }, get feishuProblem() { return setup.feishuProblem },
       configured: () => setup.configured(), links: () => runtime.links(), ticketEnvironment: ticket => runtime.ticketEnvironment(ticket),
-      checkSetup: () => { setup.check() }, requestPass: () => { passes.request() }, models: () => this.ctx.sessionController.modelCatalog() }
+      checkSetup: () => { setup.check() }, requestPass: () => { passes.request() }, models: () => this.ctx.sessionController.modelCatalog(),
+      chatIntake: input => runtime.chatIntake(input) }
   }
   /** Idempotent stop; concurrent or repeated calls share the same shutdown promise. */
   stop(): Promise<void> { return this.stopping ??= this.shutdown() }

@@ -53,6 +53,17 @@ export interface HttpHost {
   checkSetup(): void
   requestPass(): void
   models(): Promise<ModelCatalog>
+  /**
+   * Cursor / CLI intake: create a chat Trigger and optionally auto-accept it into a Ticket
+   * (so orchestration does not wait on the DeepSeek main-session router).
+   */
+  chatIntake(input: { text: string; title?: string; autoAccept?: boolean; actorId?: string }): Promise<{
+    triggerId: string
+    ticketId?: string
+    receive: string
+    decision?: string
+    detail?: string
+  }>
 }
 /**
  * Represents a client-facing 400 or 404 error raised during management route parsing or lookup.
@@ -203,6 +214,15 @@ function routes(runtime: HttpHost): Routes {
     'GET policy/history': () => policyHistory(store, runtime.sources, policyVersion(store.settings())),
     'POST policy-sync/:id': async ({ params }) => ({ policy: await runtime.settings.sync(params.id) }),
     'POST setup/check': () => { runtime.checkSetup(); return { restarting: true } },
+    'POST intake': async ({ body }) => {
+      const request = z.object({
+        text: z.string().trim().min(1).max(20_000),
+        title: z.string().trim().min(1).max(200).optional(),
+        autoAccept: z.boolean().default(true),
+        actorId: z.string().trim().min(1).max(100).optional(),
+      }).parse(await body())
+      return runtime.chatIntake(request)
+    },
     'GET models': () => runtime.models(),
     'GET prompts': ({ query }) => { const { revision, offset } = PromptsQuery.parse(query); return promptsView(runtime, revision, offset) },
     'PUT prompts': async input => {
