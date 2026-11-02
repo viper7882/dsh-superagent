@@ -241,14 +241,9 @@ export class Runtime extends Service implements SourceHost {
         : 'Request accepted for Cursor SDK execution.',
       'Watch Superagent panel for progress. DeepSeek is not required.',
     ].join(' ')
-    try {
-      await this.sessions.prompt(
-        String(agent.id),
-        `cursor-divert:${result.triggerId}`,
-        ack,
-        { inject: 'Cursor divert' },
-      )
-    } catch { /* inject is best-effort */ }
+    // Do not inject ack into the same composer session — inject/steer can re-enter
+    // agent/inbox/inserted and fork-bomb Cursor workers. Superagent panel is the status UI.
+    void ack
     return { ticketId: result.ticketId, triggerId: result.triggerId }
   }
 

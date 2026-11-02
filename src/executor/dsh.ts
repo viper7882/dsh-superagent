@@ -454,14 +454,27 @@ export class DshExecutor implements Executor {
           summary: `Running Cursor SDK worker (${cfg.python} -m scvd.cursor_worker) with CURSOR_API_KEY…`,
         })
       })
-      const result = await runCursorSdkWorker({ task, ticketId: ticket.id })
-      if (!current()) return
-      this.host.store.atomic(() => {
-        this.host.engine.report(ticket.id, {
-          state: result.ok ? 'ready' : 'failed',
-          summary: (result.ok
-            ? (result.result || result.status || 'Cursor SDK worker completed')
-            : (result.error || 'Cursor SDK worker failed')).slice(0, 4000),
+      // Detach so the orchestrator HTTP/effect loop stays responsive during long Cursor runs.
+      const ticketId = ticket.id
+      void runCursorSdkWorker({ task, ticketId }).then(result => {
+        const stored = this.host.store.tickets.get(ticketId)
+        if (!stored || !liveTicket(stored)) return
+        this.host.store.atomic(() => {
+          this.host.engine.report(ticketId, {
+            state: result.ok ? 'ready' : 'failed',
+            summary: (result.ok
+              ? (result.result || result.status || 'Cursor SDK worker completed')
+              : (result.error || 'Cursor SDK worker failed')).slice(0, 4000),
+          })
+        })
+      }).catch((error: unknown) => {
+        const stored = this.host.store.tickets.get(ticketId)
+        if (!stored || !liveTicket(stored)) return
+        this.host.store.atomic(() => {
+          this.host.engine.report(ticketId, {
+            state: 'failed',
+            summary: `Cursor SDK worker error: ${String(error)}`.slice(0, 4000),
+          })
         })
       })
       return

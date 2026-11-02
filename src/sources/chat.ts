@@ -175,6 +175,8 @@ function watchInbox(ctx: Context, source: SourceContext): () => void {
 
       const text = messageText(payload.message)
       if (!text) return
+      // Avoid feedback: divert ack / system notes must not create more Cursor tickets.
+      if (text.startsWith('Cursor-only mode:') || text.startsWith('Running Cursor SDK worker')) return
 
       // No DeepSeek key: never let the main Session / composer call llm-deepseek.
       // Park as a Cursor-owned ticket instead (same path as HTTP intake).
