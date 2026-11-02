@@ -429,6 +429,23 @@ export class DshExecutor implements Executor {
       return !!stored && liveTicket(stored) && latestAssignment(stored)?.id === assignment.id
     }
     const source = sourceTrigger(this.host, ticket)
+    // Cursor MCP/CLI HTTP intake: do not start a DeepSeek worker session. Park the ticket as waiting for an
+    // external Cursor worker (CURSOR_API_KEY). Completions POST /orchestrator/api/tickets/:id/external-report.
+    const via = source && typeof source.meta === 'object' && source.meta !== null
+      ? String((source.meta as { via?: unknown }).via ?? '')
+      : ''
+    if (via === 'http-intake') {
+      if (!current()) return
+      this.host.engine.assignmentStarted(ticket.id, assignment.id)
+      this.host.store.atomic(() => {
+        this.host.engine.report(ticket.id, {
+          state: 'waiting',
+          summary: 'Cursor external worker owns this ticket (no DeepSeek API key required). '
+            + 'Dispatch with dsh_dispatch_cursor / dsh_submit_and_dispatch, or dismiss Get started and use Cursor chat MCP.',
+        })
+      })
+      return
+    }
     const workspace = ticket.execution?.directory ?? ''
     if (!current()) return
     // Prepare the workspace directory once; an existing directory counts as already prepared, including worktrees created before `prepare` commands existed.
