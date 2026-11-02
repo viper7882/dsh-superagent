@@ -235,12 +235,11 @@ export class Runtime extends Service implements SourceHost {
       autoAccept: true,
     })
     const ack = [
-      'Cursor-only mode (no DeepSeek API key): this message was not sent to llm-deepseek.',
+      'Cursor-only mode: this message was not sent to llm-deepseek.',
       result.ticketId
-        ? `Ticket ${result.ticketId} is waiting for a Cursor worker.`
-        : 'A chat Trigger was stored for Cursor.',
-      'From Cursor chat use dsh_dispatch_cursor / dsh_submit_and_dispatch (CURSOR_API_KEY in .env).',
-      'Superagent panel shows ticket status. Optional: set DEEPSEEK_API_KEY only if you want DSH chat itself.',
+        ? `Ticket ${result.ticketId} — Super Agent is running the Cursor Agent SDK worker (CURSOR_API_KEY).`
+        : 'Request accepted for Cursor SDK execution.',
+      'Watch Superagent panel for progress. DeepSeek is not required.',
     ].join(' ')
     try {
       await this.sessions.prompt(
