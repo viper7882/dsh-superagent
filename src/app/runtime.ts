@@ -218,6 +218,42 @@ export class Runtime extends Service implements SourceHost {
     this.runtimeHealth.set({ state: 'ready', detail: 'Orchestrator is ready', at: now() })
   }
   /**
+   * Cancel a DeepSeek composer turn and park the text as a Cursor-owned ticket (no DEEPSEEK_API_KEY required).
+   */
+  async divertComposerToCursor(
+    agent: { id: string; cancel: (cause: { kind: 'user' }, options?: { keepInbox?: boolean }) => void },
+    text: string,
+  ): Promise<{ ticketId?: string; triggerId?: string }> {
+    const body = text.trim()
+    if (!body) return {}
+    try {
+      agent.cancel({ kind: 'user' }, { keepInbox: false })
+    } catch { /* turn may not have started */ }
+    const result = await this.chatIntake({
+      text: body,
+      title: body.replace(/\s+/g, ' ').trim().slice(0, 120) || 'cursor-request',
+      autoAccept: true,
+    })
+    const ack = [
+      'Cursor-only mode (no DeepSeek API key): this message was not sent to llm-deepseek.',
+      result.ticketId
+        ? `Ticket ${result.ticketId} is waiting for a Cursor worker.`
+        : 'A chat Trigger was stored for Cursor.',
+      'From Cursor chat use dsh_dispatch_cursor / dsh_submit_and_dispatch (CURSOR_API_KEY in .env).',
+      'Superagent panel shows ticket status. Optional: set DEEPSEEK_API_KEY only if you want DSH chat itself.',
+    ].join(' ')
+    try {
+      await this.sessions.prompt(
+        String(agent.id),
+        `cursor-divert:${result.triggerId}`,
+        ack,
+        { inject: 'Cursor divert' },
+      )
+    } catch { /* inject is best-effort */ }
+    return { ticketId: result.ticketId, triggerId: result.triggerId }
+  }
+
+  /**
    * External intake (Cursor MCP / CLI): synthesize a chat Trigger, receive it, then optionally auto-accept into a Ticket
    * without waiting for the DeepSeek main-session router.
    */

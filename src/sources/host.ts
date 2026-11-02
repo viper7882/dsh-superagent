@@ -24,6 +24,21 @@ export interface SourceHost {
   readonly sources: SourceRegistry
   /** Returns the context for one Source kind; its `report` writes only the health entries declared by the kind. */
   context(kind: { kind: string; health: readonly string[] }): SourceContext
+  /**
+   * Cursor-only path: create/auto-accept a Ticket without the DeepSeek router.
+   * Present on the Super Agent runtime; optional so tests can stub SourceHost.
+   */
+  chatIntake?(input: {
+    text: string
+    title?: string
+    autoAccept?: boolean
+    actorId?: string
+  }): Promise<{ triggerId: string; ticketId?: string; receive: string; decision?: string; detail?: string }>
+  /**
+   * When DeepSeek credentials are absent, cancel the in-session LLM turn and park work as a Cursor ticket.
+   */
+  divertComposerToCursor?(agent: { id: string; cancel: (cause: { kind: 'user' }, options?: { keepInbox?: boolean }) => void },
+    text: string): Promise<{ ticketId?: string; triggerId?: string }>
 }
 /** Display label, URL, and facts (`null` removes a fact) that a Source publishes on a Thread. */
 export interface ThreadDescription { label?: string; url?: string; facts?: Record<string, ThreadFact | null> }

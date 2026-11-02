@@ -42,6 +42,12 @@ export function isManagedSession(sessionId: string): boolean {
   return sessionId.startsWith('orchestrator-') || sessionId.startsWith('worker-')
 }
 
+/** True when DSH should not call llm-deepseek (no key, or SCVD_CURSOR_ONLY=1). */
+export function cursorOnlyMode(): boolean {
+  if (process.env.SCVD_CURSOR_ONLY === '1' || process.env.SCVD_CURSOR_ONLY === 'true') return true
+  return !String(process.env.DEEPSEEK_API_KEY ?? '').trim()
+}
+
 export function chatTrigger(input: {
   sessionId: string
   message: UserMessage
@@ -165,7 +171,40 @@ function watchInbox(ctx: Context, source: SourceContext): () => void {
   const handler = (payload: { agent: Agent; message: UserMessage }) => {
     try {
       const sessionId = String(payload.agent.id ?? '')
-      if (!sessionId || isManagedSession(sessionId)) return
+      if (!sessionId || sessionId.startsWith('worker-')) return
+
+      const text = messageText(payload.message)
+      if (!text) return
+
+      // No DeepSeek key: never let the main Session / composer call llm-deepseek.
+      // Park as a Cursor-owned ticket instead (same path as HTTP intake).
+      if (cursorOnlyMode()) {
+        const divert = ctx.orchestrator.divertComposerToCursor
+        if (!divert) {
+          source.report('chat', {
+            state: 'error',
+            detail: 'Cursor-only mode but divertComposerToCursor is unavailable',
+          })
+          return
+        }
+        void divert.call(ctx.orchestrator, payload.agent, text).then(
+          result => {
+            source.report('chat', {
+              state: 'ready',
+              detail: result.ticketId
+                ? `Cursor divert → ticket ${result.ticketId}`
+                : 'Cursor divert (no ticket id)',
+            })
+          },
+          (error: unknown) => {
+            source.report('chat', { state: 'error', detail: String(error) })
+          },
+        )
+        return
+      }
+
+      // DeepSeek available: normal chat Source → Trigger → router (skip orchestrator/worker).
+      if (isManagedSession(sessionId)) return
       const config = source.config<ChatConfig>(SOURCE) ?? ConfigSchema.parse({})
       const trigger = chatTrigger({
         sessionId,
